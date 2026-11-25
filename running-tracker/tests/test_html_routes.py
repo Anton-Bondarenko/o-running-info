@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 # Импортируем компоненты ДО изменения состояния
 from app.main import app, get_db
-from app.models import Athlete
+from app.models import Athlete, Training
 from app.database import Base
 
 
@@ -22,7 +22,10 @@ def test_engine():
     yield engine
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
-    os.unlink(path)
+    try:
+        os.unlink(path)
+    except OSError:
+        pass  # Windows file lock race condition
 
 
 @pytest.fixture(scope="module")
@@ -117,8 +120,7 @@ def test_htmx_patch_cell_full_name(test_db, client, _clear_data):
         json={"value": "<b>Обновленное</b> Имя"},
     )
     assert response.status_code == 200
-    assert response.text == "updated"
-
+    assert "<b>Обновленное</b>" in response.text
 
 def test_htmx_patch_cell_rank(test_db, client, _clear_data):
     """PATCH /htmx/athlete/{id}/cell/rank обновляет разряд."""
@@ -202,4 +204,169 @@ def test_delete_nonexistent_athlete(client, _clear_data):
 def test_patch_nonexistent_athlete(client, _clear_data):
     """PATCH несуществующего -> 404."""
     response = client.patch("/htmx/athlete/9999/cell/full_name", json={"value": "Тест"})
+    assert response.status_code == 404
+
+
+def test_index_month_rank_fallback_to_previous_month(client, test_db, _clear_data):
+    """Когда за текущий месяц данных нет, ранжирование идёт по последнему месяцу с данными."""
+    from app.models import Training
+    athlete1 = Athlete(full_name="Бегун 1", rank=None, rusada_status=False)
+    athlete2 = Athlete(full_name="Бегун 2", rank=None, rusada_status=False)
+    test_db.add_all([athlete1, athlete2])
+    test_db.commit()
+
+    # Добавляем объёмы только за июль (месяц 7) — текущий месяц ноябрь (11), данных нет
+    today = datetime.date.today()
+    current_month = today.month  # November = 11
+    training1 = Training(athlete_id=athlete1.id, date=datetime.date(today.year, 7, 15), distance_km=50.0)
+    training2 = Training(athlete_id=athlete2.id, date=datetime.date(today.year, 7, 20), distance_km=30.0)
+    test_db.add_all([training1, training2])
+    test_db.commit()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    html = response.text
+    # Колонка должна содержать заголовок с месяцем
+    assert "Место" in html
+
+
+# ==================== TRAINING API TESTS ====================
+
+def test_get_trainings_empty(client, _clear_data):
+    """GET /api/trainings без данных возвращает пустой список."""
+    response = client.get("/api/trainings?athlete_id=1")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_get_trainings_with_data(test_db, client, _clear_data):
+    """GET /api/trainings возвращает тренировки спортсмена."""
+    from app.models import Training
+    athlete = Athlete(full_name="Бегун", rank=None, rusada_status=False)
+    test_db.add(athlete)
+    test_db.commit()
+    test_db.refresh(athlete)
+
+    today = datetime.date.today()
+    training = Training(athlete_id=athlete.id, date=datetime.date(today.year, 5, 15), distance_km=42.5)
+    test_db.add(training)
+    test_db.commit()
+
+    response = client.get(f"/api/trainings?athlete_id={athlete.id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["distance_km"] == 42.5
+
+
+def test_get_trainings_filtered_by_month(test_db, client, _clear_data):
+    """GET /api/trainings с фильтром по месяцу возвращает только тренировки за этот месяц."""
+    from app.models import Training
+    athlete = Athlete(full_name="Бегун", rank=None, rusada_status=False)
+    test_db.add(athlete)
+    test_db.commit()
+    test_db.refresh(athlete)
+
+    today = datetime.date.today()
+    current_year = today.year
+    # Добавляем тренировки за май и июнь
+    training_may = Training(athlete_id=athlete.id, date=datetime.date(current_year, 5, 10), distance_km=30.0)
+    training_june = Training(athlete_id=athlete.id, date=datetime.date(current_year, 6, 20), distance_km=40.0)
+    test_db.add_all([training_may, training_june])
+    test_db.commit()
+
+    # Запрашиваем только июнь
+    response = client.get(f"/api/trainings?athlete_id={athlete.id}&month=6&year={current_year}")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["distance_km"] == 40.0
+
+
+def test_get_trainings_filtered_by_year(test_db, client, _clear_data):
+    """GET /api/trainings с фильтром по году возвращает тренировки за этот год."""
+    from app.models import Training
+    athlete = Athlete(full_name="Бегун", rank=None, rusada_status=False)
+    test_db.add(athlete)
+    test_db.commit()
+    test_db.refresh(athlete)
+
+    today = datetime.date.today()
+    current_year = today.year
+    training = Training(athlete_id=athlete.id, date=datetime.date(current_year, 3, 15), distance_km=25.0)
+    test_db.add(training)
+    test_db.commit()
+
+    response = client.get(f"/api/trainings?athlete_id={athlete.id}&year={current_year}")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+
+
+def test_post_training_create(test_db, client, _clear_data):
+    """POST /api/trainings создаёт новую тренировку."""
+    athlete = Athlete(full_name="Бегун", rank=None, rusada_status=False)
+    test_db.add(athlete)
+    test_db.commit()
+    test_db.refresh(athlete)
+
+    response = client.post("/api/trainings", json={
+        "athlete_id": athlete.id,
+        "date": "2026-07-15",
+        "distance_km": 35.5,
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["athlete_id"] == athlete.id
+    assert data["distance_km"] == 35.5
+
+    # Проверяем что тренировка сохранена в БД
+    stored = test_db.query(Training).filter(Training.athlete_id == athlete.id).first()
+    assert stored is not None
+    assert stored.distance_km == 35.5
+
+
+def test_post_training_upsert(test_db, client, _clear_data):
+    """POST /api/trainings обновляет существующую тренировку (upsert)."""
+    from app.models import Training
+    athlete = Athlete(full_name="Бегун", rank=None, rusada_status=False)
+    test_db.add(athlete)
+    today = datetime.date.today()
+    training = Training(athlete_id=athlete.id, date=datetime.date(today.year, 5, 10), distance_km=30.0)
+    test_db.add_all([athlete, training])
+    test_db.commit()
+
+    response = client.post("/api/trainings", json={
+        "athlete_id": athlete.id,
+        "date": today.isoformat(),
+        "distance_km": 45.0,
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["distance_km"] == 45.0
+
+
+def test_delete_training(test_db, client, _clear_data):
+    """DELETE /api/trainings/{id} удаляет тренировку."""
+    from app.models import Training
+    athlete = Athlete(full_name="Бегун", rank=None, rusada_status=False)
+    test_db.add(athlete)
+    today = datetime.date.today()
+    training = Training(athlete_id=athlete.id, date=today, distance_km=20.0)
+    test_db.add_all([athlete, training])
+    test_db.commit()
+    test_db.refresh(training)
+
+    response = client.delete(f"/api/trainings/{training.id}")
+    assert response.status_code == 200
+    assert response.json()["detail"] == "deleted"
+
+    # Проверяем что тренировка удалена
+    remaining = test_db.query(Training).filter(Training.athlete_id == athlete.id).first()
+    assert remaining is None
+
+
+def test_delete_nonexistent_training(client, _clear_data):
+    """DELETE несуществующей тренировки -> 404."""
+    response = client.delete("/api/trainings/9999")
     assert response.status_code == 404

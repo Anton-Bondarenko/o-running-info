@@ -3,50 +3,150 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Беговой объем{% endblock %}</title>
+    <title>{% block title %}FoxTrace{% endblock %}</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&family=Lobster&family=Press+Start+2P&family=Rubik:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com"></script>
+    <link rel="preconnect" href="https://googleapis.com">
+    <link rel="preconnect" href="https://gstatic.com" crossorigin>
+    <link href="https://googleapis.com/css2?family=Caveat:wght@600&family=Lobster&family=Press+Start+2P&family=Rubik:wght@400;600&display=swap" rel="stylesheet">
     <style>
-        .font-rubik { font-family: 'Rubik', sans-serif; }
-        .font-caveat { font-family: 'Caveat', cursive; }
-        .font-press-start { font-family: 'Press Start 2P', cursive; }
-        .font-lobster { font-family: 'Lobster', cursive; }
-        /* Таблица: горизонтальный скролл + зафиксированный первый столбец */
-        .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-        .table-scroll table { min-width: 1400px; }
-        .col-fname { position: sticky; left: 0; z-index: 2; background: #f9fafb; }
-        .table-scroll thead .col-fname { z-index: 3; }
-        .name-isolated { max-width: 220px; max-height: 3rem; overflow: hidden; position: relative; break-words; line-height: 1.25; contain: content; }
-        /* Статусы меддопуска */
-        .status-valid { background-color: #d1fae5; }
-        .status-expired { background-color: #fee2e2; }
-        .status-none { background-color: #e5e7eb; }
-        /* Клик-редактирование */
-        .click-editable { cursor: pointer; transition: background-color 0.15s; }
-        .click-editable:hover { background-color: #fef3c7; }
-        .editing { background-color: #fffbeb; }
+        .name-isolated {
+            contain: content;
+            max-width: 220px;
+            max-height: 3rem;
+            overflow: hidden;
+            word-break: break-word;
+            line-height: 1.25;
+        }
     </style>
 </head>
-<body class="bg-gray-50 font-rubik">
-    <div class="max-w-screen-xl mx-auto px-4 py-6">
-        <!-- Шапка -->
-        <header class="flex flex-wrap items-center justify-between gap-4 mb-6">
-            <h1 class="text-3xl font-bold text-gray-800">Беговой объем</h1>
-            <form hx-get="/" method="get" class="flex items-center gap-2">
-                <label for="year" class="text-sm font-medium text-gray-600">Год:</label>
-                <select name="year" onchange="this.form.submit()" class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400">
+<body class="bg-gray-50 text-gray-900 min-h-screen">
+    <header class="bg-white border-b border-gray-200 sticky top-0 z-20">
+        <div class="max-w-full mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-4">
+            <div class="flex items-center gap-3">
+                <span class="text-2xl">🦊</span>
+                <h1 class="text-xl font-bold text-gray-800">FoxTrace</h1>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-sm text-gray-600 font-medium">Год:</span>
+                <div class="flex gap-1">
                     {% for y in years %}
-                    <option value="{{ y }}" {% if y == selected_year %}selected{% endif %}>{{ y }}</option>
+                    <a href="/?year={{ y }}"
+                       class="px-3 py-1 rounded-md text-sm font-medium transition {% if y == selected_year %}bg-blue-600 text-white{% else %}bg-gray-100 text-gray-700 hover:bg-gray-200{% endif %}">
+                        {{ y }}
+                    </a>
                     {% endfor %}
-                </select>
-            </form>
-        </header>
+                </div>
+            </div>
+        </div>
+    </header>
 
+    <main class="max-w-full mx-auto px-4 py-6">
         {% block content %}{% endblock %}
-    </div>
+    </main>
+
+    <script>
+        // Перевод ячейки в режим редактирования по клику
+        document.addEventListener('click', async function (e) {
+            const el = e.target.closest('.click-editable');
+            if (!el) return;
+
+            const getUrl = el.getAttribute('data-hx-get');
+            if (!getUrl) return;
+
+            const resp = await fetch(getUrl);
+            if (!resp.ok) return;
+
+            const inputHtml = await resp.text();
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = inputHtml.trim();
+            const input = wrapper.firstChild;
+
+            el.replaceWith(input);
+            input.focus();
+            if (input.type === 'text') {
+                input.select();
+            }
+        });
+
+        // Сохранение значения и возврат ячейки в исходный вид без классов редактора
+        async function finishEdit(input, cancel = false) {
+            if (input.dataset.saving === 'true') return;
+            input.dataset.saving = 'true';
+
+            const tag = input.getAttribute('data-tag') || 'span';
+            const classes = input.getAttribute('data-classes') || 'click-editable';
+            const getUrl = input.getAttribute('data-hx-get');
+            const saveUrl = input.getAttribute('data-save-url');
+            const originalValue = input.getAttribute('data-original-value') || '';
+            const newValue = cancel ? originalValue : input.value.trim();
+
+            let displayHtml = newValue;
+
+            if (!cancel && newValue !== originalValue && saveUrl) {
+                const resp = await fetch(saveUrl, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ value: newValue })
+                });
+
+                if (resp.ok) {
+                    const text = await resp.text();
+                    // Для full_name сервер возвращает очищенный HTML
+                    if (saveUrl.endsWith('/full_name')) {
+                        displayHtml = text;
+                    } else if (saveUrl.endsWith('/dispensary_date')) {
+                        // Перезагружаем страницу, чтобы пересчитать цвет справки
+                        window.location.reload();
+                        return;
+                    }
+                } else {
+                    displayHtml = originalValue;
+                }
+            }
+
+            const restored = document.createElement(tag);
+            restored.className = classes;
+            restored.setAttribute('data-hx-get', getUrl);
+
+            if (saveUrl && saveUrl.endsWith('/full_name')) {
+                restored.innerHTML = displayHtml || 'Без имени';
+            } else {
+                restored.textContent = displayHtml || (saveUrl && saveUrl.endsWith('/dispensary_date') ? 'Нет даты' : '—');
+            }
+
+            input.replaceWith(restored);
+        }
+
+        document.addEventListener('keydown', function (e) {
+            if (!e.target.classList.contains('cell-edit-input')) return;
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                finishEdit(e.target, false);
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                finishEdit(e.target, true);
+            }
+        });
+
+        document.addEventListener('blur', function (e) {
+            if (e.target.classList && e.target.classList.contains('cell-edit-input')) {
+                finishEdit(e.target, false);
+            }
+        }, true);
+
+        // Переключение статуса РУСАДА
+        async function toggleRusada(btn, athleteId, currentVal) {
+            const nextVal = !currentVal;
+            const resp = await fetch(`/htmx/athlete/${athleteId}/cell/rusada_status`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ value: nextVal })
+            });
+            if (resp.ok) {
+                window.location.reload();
+            }
+        }
+    </script>
 </body>
 </html>
