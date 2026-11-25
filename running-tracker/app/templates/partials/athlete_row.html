@@ -1,0 +1,63 @@
+{% macro render_athlete_row(athlete, year) %}
+<td class="col-fname px-4 py-2 text-gray-500" id="athlete-{{ athlete.id }}">{{ athlete.id }}</td>
+<td class="col-fname px-4 py-2">
+    <div class="click-editable name-isolated"
+         hx-get="/htmx/athlete/{{ athlete.id }}/input/full_name"
+         hx-trigger="click"
+         hx-swap="none">
+        {{ athlete.full_name | safe }}
+    </div>
+</td>
+<td class="px-4 py-2">
+    {% if athlete.rank %}
+    <span class="click-editable"
+          hx-get="/htmx/athlete/{{ athlete.id }}/input/rank"
+          hx-trigger="click"
+          hx-swap="none">{{ athlete.rank }}</span>
+    {% else %}
+    <span class="text-gray-400 italic">—</span>
+    {% endif %}
+</td>
+<td class="px-4 py-2 text-center">
+    <label class="inline-flex items-center cursor-pointer click-editable">
+        <input type="checkbox"
+               class="sr-only peer rusada-toggle"
+               data-athlete-id="{{ athlete.id }}"
+               {% if athlete.rusada_status %}checked{% endif %}>
+        <div class="relative w-9 h-5 bg-gray-300 peer-disabled:opacity-50 rounded-full peer-checked:bg-green-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+    </label>
+</td>
+<td class="px-4 py-2">
+    <span class="click-editable px-3 py-1 rounded-lg text-sm inline-block dispensary-cell"
+          hx-get="/htmx/athlete/{{ athlete.id }}/input/dispensary_date"
+          hx-trigger="click"
+          hx-swap="none"
+          style="background-color: {% if athlete.dispensary_status == 'valid' %}#d1fae5{% elif athlete.dispensary_status == 'expired' %}#fee2e2{% else %}#e5e7eb{% endif %};">
+        {{ athlete.dispensary_date or 'Нет даты' }}
+    </span>
+</td>
+<td class="px-4 py-2">
+    <span class="click-editable px-3 py-1 rounded-lg text-sm inline-block clinic-cell"
+          hx-get="/htmx/athlete/{{ athlete.id }}/input/clinic_status"
+          hx-trigger="click"
+          hx-swap="none"
+          {% if not athlete.clinic_status or athlete.clinic_status == 'Не надо' %}style="color: #dc2626;"{% endif %}>
+        {{ athlete.clinic_status or 'Нет' }}
+    </span>
+</td>
+{% for i in range(12) %}
+{% set km = athlete['monthly_km_' ~ (i + 1)] %}
+<td class="px-1 py-2 text-center">
+    {% if km and km > 0 %}
+    <span class="click-distance inline-block px-2 py-1 rounded hover:bg-blue-50 transition cursor-pointer"
+          data-athlete-id="{{ athlete.id }}">{{ km }} км</span>
+    {% else %}
+    <span class="text-gray-300">—</span>
+    {% endif %}
+</td>
+{% endfor %}
+<td class="col-fname px-4 py-2 text-center font-bold text-blue-600">{{ athlete.yearly_km | round(1) }} км</td>
+<td class="px-4 py-2 text-center">
+    <button class="delete-athlete-btn text-red-500 hover:text-red-700 transition px-2 py-1 rounded hover:bg-red-50" title="Удалить спортсмена">&times;</button>
+</td>
+{% endmacro %}

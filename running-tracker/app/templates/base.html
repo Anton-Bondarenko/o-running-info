@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Беговой объем{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&family=Lobster&family=Press+Start+2P&family=Rubik:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        .font-rubik { font-family: 'Rubik', sans-serif; }
+        .font-caveat { font-family: 'Caveat', cursive; }
+        .font-press-start { font-family: 'Press Start 2P', cursive; }
+        .font-lobster { font-family: 'Lobster', cursive; }
+        /* Таблица: горизонтальный скролл + зафиксированный первый столбец */
+        .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        .table-scroll table { min-width: 1400px; }
+        .col-fname { position: sticky; left: 0; z-index: 2; background: #f9fafb; }
+        .table-scroll thead .col-fname { z-index: 3; }
+        .name-isolated { max-width: 220px; max-height: 3rem; overflow: hidden; position: relative; break-words; line-height: 1.25; contain: content; }
+        /* Статусы меддопуска */
+        .status-valid { background-color: #d1fae5; }
+        .status-expired { background-color: #fee2e2; }
+        .status-none { background-color: #e5e7eb; }
+        /* Клик-редактирование */
+        .click-editable { cursor: pointer; transition: background-color 0.15s; }
+        .click-editable:hover { background-color: #fef3c7; }
+        .editing { background-color: #fffbeb; }
+    </style>
+</head>
+<body class="bg-gray-50 font-rubik">
+    <div class="max-w-screen-xl mx-auto px-4 py-6">
+        <!-- Шапка -->
+        <header class="flex flex-wrap items-center justify-between gap-4 mb-6">
+            <h1 class="text-3xl font-bold text-gray-800">Беговой объем</h1>
+            <form hx-get="/" method="get" class="flex items-center gap-2">
+                <label for="year" class="text-sm font-medium text-gray-600">Год:</label>
+                <select name="year" onchange="this.form.submit()" class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400">
+                    {% for y in years %}
+                    <option value="{{ y }}" {% if y == selected_year %}selected{% endif %}>{{ y }}</option>
+                    {% endfor %}
+                </select>
+            </form>
+        </header>
+
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>
