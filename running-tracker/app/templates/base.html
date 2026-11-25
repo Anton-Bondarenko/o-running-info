@@ -115,6 +115,18 @@
                 restored.textContent = displayHtml || (saveUrl && saveUrl.endsWith('/dispensary_date') ? 'Нет даты' : '—');
             }
 
+            if (saveUrl && saveUrl.endsWith('/clinic_status')) {
+                const valLower = (displayHtml || '').toLowerCase();
+                restored.classList.remove('bg-gray-100', 'text-gray-700', 'bg-green-100', 'text-green-800', 'bg-red-100', 'text-red-800');
+                if (valLower === 'нет') {
+                    restored.classList.add('bg-red-100', 'text-red-800', 'font-semibold');
+                } else if (valLower === 'да' || valLower === 'допущен') {
+                    restored.classList.add('bg-green-100', 'text-green-800');
+                } else {
+                    restored.classList.add('bg-gray-100', 'text-gray-700');
+                }
+            }
+
             input.replaceWith(restored);
         }
 

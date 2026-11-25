@@ -469,65 +469,55 @@ async def htmx_update_cell(
 
 @app.get("/htmx/athlete/{athlete_id}/input/{field}")
 async def htmx_get_input(
-        athlete_id: int,
-        field: str,
-        request: Request,
-        db: Session = Depends(get_db),
+    athlete_id: int,
+    field: str,
+    request: Request,
+    db: Session = Depends(get_db),
 ):
     athlete = db.query(Athlete).filter(Athlete.id == athlete_id).first()
-
     if not athlete:
         raise HTTPException(status_code=404, detail="Спортсмен не найден")
-    nullable_fields = {"rank", "clinic_status"}
-    default_value = "" if field in nullable_fields else athlete.full_name
-    # ИСПРАВЛЕНО: из атрибутов data-classes убраны классы редактора (border border-blue-400 и cell-edit-input)
+
     input_htmls = {
         "full_name": (
-                '<input type="text" value="' + html.escape(default_value or "") + '" '
-                                                                                  'data-original-value="' + html.escape(
-            athlete.full_name or "") + '" '
-                                       'data-tag="div" '
-                                       'data-classes="click-editable name-isolated rounded px-2 py-1 text-sm w-full" '
-                                       'class="border border-blue-400 rounded px-2 py-1 text-sm w-full cell-edit-input" '
-                                       'data-hx-get="/htmx/athlete/' + str(athlete_id) + '/input/full_name" '
-                                                                                         'data-save-url="/htmx/athlete/' + str(
-            athlete_id) + '/cell/full_name" autofocus>'
+            '<input type="text" value="' + html.escape(athlete.full_name or "") + '" '
+            'data-original-value="' + html.escape(athlete.full_name or "") + '" '
+            'data-tag="div" '
+            'data-classes="click-editable name-isolated rounded px-2 py-1 text-sm w-full cursor-pointer hover:bg-blue-50" '
+            'class="border border-blue-400 rounded px-2 py-1 text-sm w-full cell-edit-input" '
+            'data-hx-get="/htmx/athlete/' + str(athlete_id) + '/input/full_name" '
+            'data-save-url="/htmx/athlete/' + str(athlete_id) + '/cell/full_name" autofocus>'
         ),
         "rank": (
-                '<input type="text" value="' + html.escape(athlete.rank or "") + '" '
-                                                                                 'data-original-value="' + html.escape(
-            athlete.rank or "") + '" '
-                                  'data-tag="span" '
-                                  'data-classes="click-editable px-2 py-1 bg-gray-100 rounded text-sm font-semibold text-gray-700 w-28" '
-                                  'class="border border-blue-400 rounded px-2 py-1 text-sm w-28 cell-edit-input" '
-                                  'data-hx-get="/htmx/athlete/' + str(athlete_id) + '/input/rank" '
-                                                                                    'data-save-url="/htmx/athlete/' + str(
-            athlete_id) + '/cell/rank" autofocus>'
+            '<input type="text" value="' + html.escape(athlete.rank or "") + '" '
+            'data-original-value="' + html.escape(athlete.rank or "") + '" '
+            'data-tag="span" '
+            'data-classes="click-editable px-2 py-1 bg-gray-100 rounded text-sm font-semibold text-gray-700 w-28 inline-block cursor-pointer hover:bg-blue-50" '
+            'class="border border-blue-400 rounded px-2 py-1 text-sm w-28 cell-edit-input" '
+            'data-hx-get="/htmx/athlete/' + str(athlete_id) + '/input/rank" '
+            'data-save-url="/htmx/athlete/' + str(athlete_id) + '/cell/rank" autofocus>'
         ),
         "dispensary_date": (
-                '<input type="date" value="' + (
-            athlete.dispensary_date.isoformat() if athlete.dispensary_date else "") + '" '
-                                                                                      'data-original-value="' + html.escape(
-            athlete.dispensary_date.isoformat() if athlete.dispensary_date else "") + '" '
-                                                                                      'data-tag="span" '
-                                                                                      'data-classes="click-editable px-3 py-1 rounded-lg text-sm inline-block dispensary-cell" '
-                                                                                      'class="border border-blue-400 rounded px-2 py-1 text-sm cell-edit-input" '
-                                                                                      'data-hx-get="/htmx/athlete/' + str(
-            athlete_id) + '/input/dispensary_date" '
-                          'data-save-url="/htmx/athlete/' + str(athlete_id) + '/cell/dispensary_date" autofocus>'
+            '<input type="date" value="' + (athlete.dispensary_date.isoformat() if athlete.dispensary_date else "") + '" '
+            'data-original-value="' + html.escape(athlete.dispensary_date.isoformat() if athlete.dispensary_date else "") + '" '
+            'data-tag="span" '
+            'data-classes="click-editable px-3 py-1 rounded-lg text-sm inline-block dispensary-cell cursor-pointer bg-gray-100 text-gray-600" '
+            'class="border border-blue-400 rounded px-2 py-1 text-sm cell-edit-input" '
+            'data-hx-get="/htmx/athlete/' + str(athlete_id) + '/input/dispensary_date" '
+            'data-save-url="/htmx/athlete/' + str(athlete_id) + '/cell/dispensary_date" autofocus>'
         ),
         "clinic_status": (
-                '<input type="text" value="' + html.escape(athlete.clinic_status or "") + '" '
-                                                                                          'data-original-value="' + html.escape(
-            athlete.clinic_status or "") + '" '
-                                           'data-tag="span" '
-                                           'data-classes="click-editable px-3 py-1 rounded-lg text-sm inline-block clinic-cell w-full" '
-                                           'class="border border-blue-400 rounded px-2 py-1 text-sm w-full cell-edit-input" '
-                                           'data-hx-get="/htmx/athlete/' + str(athlete_id) + '/input/clinic_status" '
-                                                                                             'data-save-url="/htmx/athlete/' + str(
-            athlete_id) + '/cell/clinic_status" autofocus>'
+            '<input type="text" value="' + html.escape(athlete.clinic_status or "") + '" '
+            'data-original-value="' + html.escape(athlete.clinic_status or "") + '" '
+            'data-tag="span" '
+            'data-classes="click-editable px-3 py-1 rounded-lg text-sm inline-block clinic-cell w-full cursor-pointer bg-gray-100 text-gray-700" '
+            'class="border border-blue-400 rounded px-2 py-1 text-sm w-full cell-edit-input" '
+            'data-hx-get="/htmx/athlete/' + str(athlete_id) + '/input/clinic_status" '
+            'data-save-url="/htmx/athlete/' + str(athlete_id) + '/cell/clinic_status" autofocus>'
         ),
     }
+
     if field not in input_htmls:
         raise HTTPException(status_code=400, detail=f"Неизвестное поле: {field}")
+
     return HTMLResponse(input_htmls[field])
