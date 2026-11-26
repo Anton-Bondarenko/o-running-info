@@ -2,8 +2,15 @@ import os
 
 # Load .env if present (for deploy env vars)
 try:
-    from dotenv import load_dotenv
-    load_dotenv()  # loads .env from project root
+    from dotenv import dotenv_values
+    # /app/.env is mounted by docker-compose as a file volume
+    _env_path = '/app/.env'
+    if os.path.exists(_env_path):
+        vals = dotenv_values(_env_path)
+        if vals:
+            for k, v in vals.items():
+                if v is not None:
+                    os.environ.setdefault(k, v)
 except ImportError:
     pass
 
