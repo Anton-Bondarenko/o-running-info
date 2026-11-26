@@ -47,7 +47,12 @@ $username  = $env:DEPLOY_USER
 $pass      = $env:DEPLOY_PASSWORD
 $port      = if ($env:SSH_PORT)         { $env:SSH_PORT }     else { '22' }
 $remoteAppDir = if ($env:REMOTE_APP_DIR){ $env:REMOTE_APP_DIR}else { '/home/claude/o-running-info/running-tracker' }
-$dbPath    = if ($env:REMOTE_DB_DIR)    { $env:REMOTE_DB_DIR }else { '/srv/dev-disk-by-uuid-86f96d82-ed9f-446e-851c-e27448c041eb/data/running-tracker-data' }
+# Host directory for bind-mount (where the actual SQLite file lives on the Raspberry Pi host)
+$hostDataDir = if ($env:PROD_DATA_DIR) {
+       ($env:PROD_DATA_DIR + '/running-tracker-data').Replace('\', '/')
+   } else {
+       '/srv/dev-disk-by-uuid-86f96d82-ed9f-446e-851c-e27448c041eb/data/running-tracker-data'
+   }
 
 $sshStartTime = 0
 function Run-Ssh {
@@ -76,7 +81,7 @@ Write-Host "  running-tracker deploy" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "[*] Target:    $($username)@${hostName}:${port}" -ForegroundColor Yellow
 Write-Host "[*] Remote app: ${remoteAppDir}" -ForegroundColor Yellow
-Write-Host "[*] DB path:    ${dbPath}" -ForegroundColor Yellow
+Write-Host "[*] DB path:    ${hostDataDir}" -ForegroundColor Yellow
 
 # === SSH Connection Recovery ===
 
@@ -95,12 +100,14 @@ function Ensure-SSHAlive {
 }
 
 # === DB Safety Functions ===
+# NOTE: All $hostPath parameters refer to the RASPBERRY PI HOST filesystem path.
+# The Docker bind mount maps hostPath → /app/data inside the container.
 
 function Test-RemoteDBExists {
-    param([string]$dbPath)
+    param([string]$hostPath)
     try {
         Ensure-SSHAlive
-        $result = Run-Ssh "test -f '$dbPath/tracker.db' && echo EXISTS || echo MISSING"
+        $result = Run-Ssh "test -f '$hostPath/tracker.db' && echo EXISTS || echo MISSING"
         return ($result.Trim() -eq 'EXISTS')
     } catch {
         Write-Host "[!] DB check failed (SSH error)" -ForegroundColor Yellow
@@ -109,12 +116,12 @@ function Test-RemoteDBExists {
 }
 
 function Test-RemoteDBValid {
-    param([string]$dbPath)
+    param([string]$hostPath)
     try {
         Ensure-SSHAlive
         # Check SQLite magic header and non-zero file size
-        $magic = Run-Ssh "xxd -l 16 -p '$dbPath/tracker.db' 2>/dev/null"
-        $size  = Run-Ssh "stat -c '%s' '$dbPath/tracker.db' 2>/dev/null || echo 0"
+        $magic = Run-Ssh "xxd -l 16 -p '$hostPath/tracker.db' 2>/dev/null"
+        $size  = Run-Ssh "stat -c '%s' '$hostPath/tracker.db' 2>/dev/null || echo 0"
         if ($magic -match '534c69746520666f726d6174203300' -and [int]$size -gt 0) {
             return $true
         }
@@ -125,12 +132,12 @@ function Test-RemoteDBValid {
 }
 
 function Backup-RemoteDB {
-    param([string]$dbPath, [string]$backupDir)
+    param([string]$hostPath, [string]$backupDir)
     Write-Host "`n[!] Database found - creating backup before deploy..." -ForegroundColor Yellow
     $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     Run-Ssh "mkdir -p '$backupDir'" | Out-Null
     $bakPath = "$backupDir/tracker-backup-${timestamp}.db"
-    $rc = Run-Ssh "cp '$dbPath/tracker.db' '$bakPath' 2>&1"
+    $rc = Run-Ssh "cp '$hostPath/tracker.db' '$bakPath' 2>&1"
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[+] Backup saved to $bakPath" -ForegroundColor Green
     } else {
@@ -139,20 +146,20 @@ function Backup-RemoteDB {
 }
 
 function Ensure-ValidDBOnHost {
-    param([string]$dbPath)
-    # Guarantee a valid SQLite DB always exists at bind-mount point BEFORE container starts
-    $bakDir = "$dbPath/pre-deploy-backups"
+    param([string]$hostPath)
+    # Guarantee a valid SQLite DB always exists in the host bind-mount source dir
+    $bakDir = "$hostPath/pre-deploy-backups"
 
-    if (Test-RemoteDBExists $dbPath) {
+    if (Test-RemoteDBExists $hostPath) {
         Write-Log "[*] DB file found, checking validity..."
-        if (-not (Test-RemoteDBValid $dbPath)) {
+        if (-not (Test-RemoteDBValid $hostPath)) {
             Write-Host "[!] DB file exists but is corrupted/empty — replacing with fresh valid DB" -ForegroundColor Yellow
             # Backup first if there's a non-empty file
-            $size = Run-Ssh "stat -c '%s' '$dbPath/tracker.db' 2>/dev/null || echo 0"
+            $size = Run-Ssh "stat -c '%s' '$hostPath/tracker.db' 2>/dev/null || echo 0"
             if ([int]$size -gt 0) {
                 Run-Ssh "mkdir -p '$bakDir'" | Out-Null
                 $bakName = "tracker-bad-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".db"
-                Run-Ssh "cp '$dbPath/tracker.db' '$bakDir/$bakName' 2>&1" | Out-Null
+                Run-Ssh "cp '$hostPath/tracker.db' '$bakDir/$bakName' 2>&1" | Out-Null
                 Write-Host "[!] Backed up corrupted file" -ForegroundColor Yellow
             }
         } else {
@@ -160,34 +167,36 @@ function Ensure-ValidDBOnHost {
             return
         }
     } else {
-        Write-Host "[!] No database found at $dbPath — creating new one on host for bind-mount." -ForegroundColor Yellow
-        Run-Ssh "mkdir -p '$dbPath' '$bakDir'" | Out-Null
+        Write-Host "[!] No database found at $hostPath — creating new one on host for bind-mount." -ForegroundColor Yellow
+        Run-Ssh "mkdir -p '$hostPath' '$bakDir'" | Out-Null
     }
 
-    # Write DB creation script to temp file and upload to server
-    $createDbScript = "import sqlite3, sys, os`n" +
-        "db = r'$dbPath/tracker.db'`n" +
-        "if os.path.exists(db): os.remove(db)`n" +
-        "conn = sqlite3.connect(db)`n" +
-        "cur = conn.cursor()`n" +
-        "cur.execute('CREATE TABLE IF NOT EXISTS athletes (id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT, rank TEXT, rusada_status BOOLEAN DEFAULT 0, dispensary_date TEXT, clinic_status TEXT, is_active BOOLEAN DEFAULT 1, deleted_at TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)')`n" +
-        "cur.execute('CREATE TABLE IF NOT EXISTS trainings (id INTEGER PRIMARY KEY AUTOINCREMENT, athlete_id INTEGER NOT NULL, date DATE, distance_km REAL, FOREIGN KEY(athlete_id) REFERENCES athletes(id))')`n" +
-        "conn.commit()`n" +
-        "conn.close()`n" +
-        "print('OK: valid DB created at ' + db)`n"
-    $scriptTmp = "$env:TEMP\rt-create-db.py"
-    [IO.File]::WriteAllText($scriptTmp, $createDbScript, [System.Text.UTF8Encoding]::UTF8)
+    # Write Python script to a temporary file on the remote host and execute it there.
+    # This avoids docker, long command-lines, and nested quoting.
+    $pyScript = "import sqlite3, os" + "`n" +
+        "db = r'$hostDataDir/tracker.db'" + "`n" +
+        "if os.path.exists(db): os.remove(db)" + "`n" +
+        "conn = sqlite3.connect(db)" + "`n" +
+        "cur = conn.cursor()" + "`n" +
+        "cur.execute('CREATE TABLE IF NOT EXISTS athletes (id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT, rank TEXT, rusada_status BOOLEAN DEFAULT 0, dispensary_date TEXT, clinic_status TEXT, is_active BOOLEAN DEFAULT 1, deleted_at TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)')" + "`n" +
+        "cur.execute('CREATE TABLE IF NOT EXISTS trainings (id INTEGER PRIMARY KEY AUTOINCREMENT, athlete_id INTEGER NOT NULL, date DATE, distance_km REAL, FOREIGN KEY(athlete_id) REFERENCES athletes(id))')" + "`n" +
+        "conn.commit()" + "`n" +
+        "conn.close()" + "`n" +
+        "print('OK: valid DB created at ' + db)" + "`n"
+
     $remoteScriptPath = "/tmp/rt-create-db-server.py"
-    & pscp -batch -P $port -pw $pass $scriptTmp "${username}@${hostName}:${remoteScriptPath}" | Out-Null
+    [IO.File]::WriteAllText("$env:TEMP\rt-create-db-server.py", $pyScript, [System.Text.UTF8Encoding]::UTF8)
+    & pscp -batch -P $port -pw $pass "$env:TEMP\rt-create-db-server.py" "${username}@${hostName}:$remoteScriptPath" | Out-Null
 
     $rc = Run-Ssh "python3 -I '$remoteScriptPath'"
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "[+] Valid SQLite database ensured at $dbPath/tracker.db" -ForegroundColor Green
+        Write-Host "[+] Valid SQLite database ensured at $hostDataDir/tracker.db" -ForegroundColor Green
     } else {
         Write-Host "[!] ERROR: Could not create DB on host!" -ForegroundColor Red
         Write-Host "    Data will be lost on next deploy!" -ForegroundColor Red
     }
-    Remove-Item $scriptTmp -Force -ErrorAction SilentlyContinue
+
+    Remove-Item "$env:TEMP\rt-create-db-server.py" -Force -ErrorAction SilentlyContinue
 }
 
 # === Down mode ===
@@ -196,10 +205,10 @@ if ($Down) {
     Write-Host "`n[*] Bringing stack down..."
 
     # Safety: backup DB before stopping container
-    if (Test-RemoteDBExists $dbPath) {
-        Backup-RemoteDB $dbPath "$dbPath"
+    if (Test-RemoteDBExists $hostDataDir) {
+        Backup-RemoteDB $hostDataDir "$hostDataDir"
     } else {
-        Write-Host "[!] No database found at $dbPath" -ForegroundColor Yellow
+        Write-Host "[!] No database found at $hostDataDir" -ForegroundColor Yellow
         Write-Host "    Data may be lost - verify the bind-mount directory on host." -ForegroundColor Yellow
     }
 
@@ -213,20 +222,20 @@ if ($Down) {
 
 # === Pre-flight DB safety check ===
 Write-Log "[*] Checking database integrity..." -ForegroundColor Cyan
-$dbExists = Test-RemoteDBExists $dbPath
+$dbExists = Test-RemoteDBExists $hostDataDir
 
 if ($dbExists) {
-    Write-Host "[+] Database exists at $dbPath" -ForegroundColor Green
+    Write-Host "[+] Database exists at $hostDataDir" -ForegroundColor Green
 
     # Also check file size to catch empty/corrupted files
-    $dbSize = Run-Ssh "stat -c '%s' '$dbPath/tracker.db' 2>/dev/null || echo 0"
+    $dbSize = Run-Ssh "stat -c '%s' '$hostDataDir/tracker.db' 2>/dev/null || echo 0"
     if ([int]$dbSize -lt 1024) {
         Write-Host "[!] Database file too small (${dbSize} bytes) - may be corrupted or empty." -ForegroundColor Yellow
         Write-Host "    A backup will be created before overwriting." -ForegroundColor Yellow
-        Backup-RemoteDB $dbPath "$dbPath/pre-deploy-backups"
+        Backup-RemoteDB $hostDataDir "$hostDataDir/pre-deploy-backups"
     }
 } else {
-    Write-Host "[!] No database found at $dbPath" -ForegroundColor Red
+    Write-Host "[!] No database found at $hostDataDir" -ForegroundColor Red
     Write-Host "    The bind-mount directory is empty - data will NOT survive this deploy." -ForegroundColor Red
     Write-Host "    Possible causes:" -ForegroundColor Yellow
     Write-Host "    1. Previous deploy used Docker volume instead of host bind-mount" -ForegroundColor Gray
@@ -234,14 +243,14 @@ if ($dbExists) {
     Write-Host "    3. Container wrote to non-persistent storage" -ForegroundColor Gray
     Write-Host ""
     Write-Host "    ACTION REQUIRED:" -ForegroundColor Yellow
-    Write-Host "    - If you have a backup, restore it to: $dbPath/tracker.db" -ForegroundColor Gray
+    Write-Host "    - If you have a backup, restore it to: $hostDataDir/tracker.db" -ForegroundColor Gray
     Write-Host "    - Otherwise the app will start with an empty database." -ForegroundColor Gray
 }
 
 # === Ensure remote directory exists (safe - never removes data) ===
 Write-Host "`n[*] Ensuring remote directories..."
 Ensure-SSHAlive
-Run-Ssh "mkdir -p '$remoteAppDir/app/static/fonts' '$remoteAppDir/app/templates/partials' '$dbPath'" | Out-Null
+Run-Ssh "mkdir -p '$remoteAppDir/app/static/fonts' '$remoteAppDir/app/templates/partials' '$hostDataDir'" | Out-Null
 
 # === Upload config files ===
 function Send-RemoteFile {
@@ -293,6 +302,7 @@ function Sync-Dir {
 Write-Host "`n[*] Uploading files..."
 
 # docker-compose.yml (use existing pre-built image - skip pip install)
+# Volume mount: ${hostDataDir} (host) → /app/data (container)
 $composeYml = @"
 services:
   running-tracker:
@@ -302,7 +312,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ${dbPath}:/app/data
+      - ${hostDataDir}:/app/data
       - ${remoteAppDir}/.env:/app/.env:ro
     environment:
       - SERVER_HOST=0.0.0.0
@@ -342,7 +352,7 @@ Write-Host "[+] Files synced."
 
 # === Ensure valid DB exists at bind-mount BEFORE starting container ===
 Write-Host "`n[*] Checking database persistence setup..." -ForegroundColor Cyan
-Ensure-ValidDBOnHost $dbPath
+Ensure-ValidDBOnHost $hostDataDir
 
 # === Up (no rebuild - use existing image) ===
 Write-Host "`n[*] Stopping any existing container first..."

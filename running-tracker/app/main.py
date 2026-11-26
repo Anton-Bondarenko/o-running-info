@@ -58,8 +58,6 @@ def sanitize_name(raw_name: str) -> str:
 @app.on_event("startup")
 def startup():
     init_db()
-    seed_if_empty()
-
 
 def seed_if_empty():
     """Заполняем базу тестовыми спортсменами и тренировками, если пуста."""
