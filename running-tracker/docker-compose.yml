@@ -1,0 +1,16 @@
+services:
+  running-tracker:
+    build: .
+    container_name: running-tracker
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ${PROD_DATA_DIR}/running-tracker-data:/app/data
+      - ./.env:/app/.env:ro
+    env_file:
+      - .env
+    environment:
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8000
+      - WORKERS=1

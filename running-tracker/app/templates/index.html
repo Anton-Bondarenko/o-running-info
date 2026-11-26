@@ -34,8 +34,8 @@
                 <th class="px-3 py-3 text-center">РУСАДА</th>
                 <th class="px-3 py-3 text-center whitespace-nowrap">Меддопуск (диспансер)</th>
                 <th class="px-3 py-3 text-center whitespace-nowrap">Меддопуск (поликлиника)</th>
-                {% for m in months %}
-                <th class="px-2 py-3 text-center">{{ m }}</th>
+                {% for mi in range(1, 13) %}
+                <th class="px-2 py-3 text-center cursor-pointer hover:bg-blue-100 hover:text-blue-700 transition" title="Нажмите для просмотра тренировок всех спортсменов" onclick="event.stopPropagation(); openTrainingsModalFromHeader({{ mi }})">{{ months[mi - 1] }}</th>
                 {% endfor %}
                 <th class="px-3 py-3 text-right">Итого</th>
                 <th class="px-3 py-3 text-center">Действия</th>
@@ -103,16 +103,40 @@
 </div>
 
 <!-- Модальное окно: Тренировки -->
+<div id="trainings-month-modal" class="hidden fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+        <div class="flex justify-between items-center mb-2">
+            <h2 class="text-lg font-bold text-gray-800" id="trainings-month-title">Тренировки</h2>
+            <button type="button" onclick="closeTrainingsModal()" class="text-gray-400 hover:text-gray-600 text-xl font-bold">×</button>
+        </div>
+        <!-- Спортсмен — вне #trainings-month-content, чтобы не перезаписывался при загрузке -->
+        <div id="trainings-modal-athlete-row">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Спортсмен</label>
+            <select id="trainings-modal-athlete-id"
+                    class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                {% for athlete in athletes %}
+                <option value="{{ athlete.id }}">{{ athlete.full_name | striptags }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <!-- Контент загружается динамически -->
+        <div id="trainings-month-content" class="space-y-4">
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно: Добавить тренировку -->
 <div id="add-training-modal" class="hidden fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
     <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
         <div class="flex justify-between items-center mb-4">
-            <h2 class="text-lg font-bold text-gray-800">Тренировки</h2>
+            <h2 class="text-lg font-bold text-gray-800">Добавить тренировку</h2>
             <button type="button" onclick="document.getElementById('add-training-modal').classList.add('hidden')" class="text-gray-400 hover:text-gray-600 text-xl font-bold">×</button>
         </div>
-        <form onsubmit="submitTraining(event)" class="space-y-4">
+        <form id="add-training-form" onsubmit="submitTraining(event)" class="space-y-4">
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Спортсмен</label>
-                <select id="training-athlete-id" required class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                <select id="training-athlete-id" required
+                        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
                     {% for athlete in athletes %}
                     <option value="{{ athlete.id }}">{{ athlete.full_name | striptags }}</option>
                     {% endfor %}
@@ -121,7 +145,8 @@
             <div class="grid grid-cols-2 gap-3">
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Дата</label>
-                    <input type="date" id="training-date" required class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                    <input type="date" id="training-date" required
+                           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Км</label>
@@ -140,6 +165,180 @@
 </div>
 
 <script>
+    // Текущий выбранный месяц (1-12) в модальном окне
+    let _selectedMonth = null;
+    let _selectedAthleteId = null;
+    let _isLoading = false;
+
+    // Сохраняем ссылку на ячейку, которая вызвала модалку
+    let _triggerCell = null;
+
+    function openTrainingsModal(month, athleteId, cellEl) {
+        _selectedMonth = month;
+        _selectedAthleteId = athleteId || null;
+        _triggerCell = cellEl || null;
+        const monthNames = ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+                           'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+        document.getElementById('trainings-month-title').textContent = `Тренировки за ${monthNames[month] || ''}`;
+        // Синхронизируем <select> с выбранным атлетом
+        const sel = document.getElementById('trainings-modal-athlete-id');
+        if (sel && athleteId) {
+            sel.value = String(athleteId);
+        }
+        document.getElementById('trainings-month-modal').classList.remove('hidden');
+        // Загружаем тренировки для выбранного спортсмена/месяца
+        loadMonthTrainings();
+    }
+
+    function openTrainingsModalFromHeader(monthNum) {
+        // Клик по заголовку месяца: показываем тренировки всех спортсменов за этот месяц
+        openTrainingsModal(monthNum, null);
+        _selectedAthleteId = '__all__';
+        let sel = document.getElementById('trainings-modal-athlete-id');
+        if (sel) {
+            sel.style.display = 'none';
+        }
+        loadMonthTrainings();
+    }
+
+    async function closeTrainingsModal() {
+        const refreshedAthleteId = _selectedAthleteId && _selectedAthleteId !== '__all__' ? _selectedAthleteId : null;
+        document.getElementById('trainings-month-modal').classList.add('hidden');
+        _selectedMonth = null;
+        _selectedAthleteId = null;
+        // Обновляем таблицу после закрытия модалки (например, после добавления тренировки)
+        if (refreshedAthleteId) {
+            const tbodyResp = await fetch(`/htmx/athletes-tbody/{{ selected_year }}`);
+            if (tbodyResp.ok) {
+                document.getElementById('athletes-tbody').innerHTML = await tbodyResp.text();
+            }
+        }
+    }
+
+    async function loadMonthTrainings() {
+        if (!_selectedMonth || _isLoading) return;
+
+        // 1. Режим "все спортсмены" (клик по заголовку месяца)
+        if (_selectedAthleteId === '__all__') {
+            document.getElementById('trainings-month-content').innerHTML = '<p class="text-gray-400 py-8 text-center">Загрузка...</p>';
+            _isLoading = true;
+            let resp;
+            try {
+                const allHtml = _buildAllModeSelect();
+                document.getElementById('trainings-month-content').innerHTML = allHtml;
+                resp = await fetch(`/htmx/trainings-all?month=${_selectedMonth}&year={{ selected_year }}`);
+            } finally {
+                _isLoading = false;
+            }
+            if (!resp || !resp.ok) {
+                document.getElementById('trainings-month-content').innerHTML = '<p class="text-red-500 py-8 text-center">Ошибка загрузки</p>';
+                return;
+            }
+            const allHtml2 = await resp.text();
+            document.getElementById('trainings-month-content').innerHTML = allHtml2;
+            return;
+        }
+
+        // 2. Конкретный спортсмен: приоритет _selectedAthleteId (из клика по ячейке), иначе — значение <select>
+        const sel = document.getElementById('trainings-modal-athlete-id');
+        let athleteId;
+        if (_selectedAthleteId != null && _selectedAthleteId !== '__all__') {
+            // Sync уже сделан в openTrainingsModal — берём из select (он синхронизирован)
+            athleteId = parseInt(sel.value, 10);
+        } else {
+            // Режим "все" → пользователь переключил спортсмена в <select>
+            athleteId = parseInt(sel.value, 10);
+            _selectedAthleteId = '__all__'; // сбрасываем — режим остаёмся "все", но показываем конкретную тренировку
+        }
+
+        document.getElementById('trainings-month-content').innerHTML = '<p class="text-gray-400 py-8 text-center">Загрузка...</p>';
+        _isLoading = true;
+
+        let resp;
+        try {
+            // Показываем dropdown, если скрыт
+            if (sel) sel.style.display = '';
+            resp = await fetch(`/htmx/athlete/${athleteId}/trainings?month=${_selectedMonth}&year={{ selected_year }}`);
+        } finally {
+            _isLoading = false;
+        }
+
+        if (!resp || !resp.ok) {
+            document.getElementById('trainings-month-content').innerHTML = '<p class="text-red-500 py-8 text-center">Ошибка загрузки</p>';
+            return;
+        }
+
+        const html = await resp.text();
+        document.getElementById('trainings-month-content').innerHTML = html;
+    }
+
+    function _buildAllModeSelect() {
+        let html = '<div><label class="block text-sm font-medium text-gray-700 mb-1">Все спортсмены</label>';
+        html += '<span class="text-xs text-blue-600 cursor-pointer" onclick="_showAthleteDropdown()">Показать список спортсменов ▼</span>';
+        html += '</div>';
+        return html;
+    }
+
+    function _showAthleteDropdown() {
+        const sel = document.getElementById('trainings-modal-athlete-id');
+        if (sel) {
+            sel.style.display = '';
+            loadMonthTrainings();
+        }
+    }
+
+    async function addTrainingForMonth(e, athleteId, year, month) {
+        e.preventDefault();
+        const dateEl = document.getElementById(`new-training-date-for-month-${athleteId}`);
+        const kmEl = document.getElementById(`new-training-km-for-month-${athleteId}`);
+        const dateStr = dateEl ? dateEl.value : document.getElementById('new-training-date-for-month').value;
+        const km = kmEl ? parseFloat(kmEl.value) : parseFloat(document.getElementById('new-training-km-for-month').value);
+        if (!dateStr || isNaN(km)) return;
+        const payload = { athlete_id: athleteId, date: dateStr, distance_km: km };
+        const resp = await fetch('/api/trainings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (resp.ok) {
+            loadMonthTrainings();
+            // Обновляем таблицу после сохранения
+            if (_selectedAthleteId === '__all__') {
+                // Режим «все»: полная перерисовка строки через HTMX
+                const tbodyResp = await fetch(`/htmx/athletes-tbody/{{ selected_year }}`);
+                if (tbodyResp.ok) {
+                    document.getElementById('athletes-tbody').innerHTML = await tbodyResp.text();
+                }
+            } else {
+                updateTriggerCellAfterAdd(_selectedMonth, athleteId, km);
+            }
+        }
+    }
+
+    // Обновляет ячейку и итог триггерной строки после добавления тренировки
+    function updateTriggerCellAfterAdd(month, athleteId, addedKm) {
+        if (!_triggerCell) return;
+        const row = _triggerCell.closest('tr');
+        if (!row) return;
+
+        // Обновляем ячейку месяца
+        const cellEl = _triggerCell.querySelector('span');
+        if (cellEl) {
+            const kmText = addedKm.toFixed(1) + ' км';
+            cellEl.textContent = kmText;
+            cellEl.className = 'cursor-pointer hover:bg-blue-50 hover:text-blue-700 rounded px-1 py-0.5 transition text-blue-700 font-medium';
+            cellEl.title = 'Нажмите для просмотра тренировок';
+            cellEl.setAttribute('onclick', `event.stopPropagation(); openTrainingsModal(${month}, ${athleteId}, this)`);
+        }
+
+        // Обновляем годовое итог в строке
+        const totalCell = row.querySelector('td:last-of-type') || row.cells[row.cells.length - 2];
+        if (totalCell) {
+            const oldKm = parseFloat(totalCell.textContent) || 0;
+            totalCell.textContent = (oldKm + addedKm).toFixed(1) + ' км';
+        }
+    }
+
     document.getElementById('training-date').valueAsDate = new Date();
 
     async function submitTraining(e) {
@@ -156,6 +355,21 @@
         });
         if (resp.ok) {
             window.location.reload();
+        }
+    }
+
+    async function deleteTraining(btn) {
+        const li = btn.closest('li');
+        if (!li) return;
+        const trainingId = li.getAttribute('data-training-id');
+        if (!trainingId || !confirm('Удалить эту тренировку?')) return;
+        li.style.opacity = '0.5';
+        const resp = await fetch(`/api/trainings/${trainingId}`, { method: 'DELETE' });
+        if (resp.ok) {
+            li.remove();
+        } else {
+            li.style.opacity = '1';
+            alert('Ошибка удаления');
         }
     }
 </script>

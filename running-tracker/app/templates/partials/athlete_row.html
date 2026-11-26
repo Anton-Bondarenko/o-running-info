@@ -74,9 +74,13 @@
         {% set km = athlete['monthly_km_' ~ (i + 1)] %}
         <td class="px-2 py-2 text-sm text-center whitespace-nowrap">
             {% if km and km > 0 %}
-                <span class="text-gray-800 font-medium">{{ km | round(1) }} км</span>
+                <span class="cursor-pointer hover:bg-blue-50 hover:text-blue-700 rounded px-1 py-0.5 transition"
+                      onclick="event.stopPropagation(); openTrainingsModal({{ i + 1 }}, {{ athlete.id }}, this)"
+                      title="Нажмите для просмотра тренировок">{{ km | round(1) }} км</span>
             {% else %}
-                <span class="text-gray-300">—</span>
+                <span class="cursor-pointer hover:bg-blue-50 hover:text-blue-700 rounded px-1 py-0.5 transition text-gray-400"
+                      onclick="event.stopPropagation(); openTrainingsModal({{ i + 1 }}, {{ athlete.id }}, this)"
+                      title="Нажмите для добавления тренировок">—</span>
             {% endif %}
         </td>
     {% endfor %}

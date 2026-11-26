@@ -7,6 +7,7 @@ import bleach
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
 import jinja2
 from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from app.database import get_db, init_db, SessionLocal
@@ -36,6 +37,14 @@ def render(template_name: str, context: dict) -> HTMLResponse:
 
 
 app = FastAPI(title="Running Tracker API")
+
+_app_dir = os.path.dirname(__file__)
+_static_dir = os.path.join(_app_dir, "static")
+
+if not os.path.isdir(_static_dir):
+    raise RuntimeError(f"Static directory not found: {_static_dir}")
+
+app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 ALLOWED_TAGS = ["b", "i", "u", "s", "em", "strong", "mark", "font", "span", "marquee"]
 ALLOWED_ATTRS = {"font": ["color", "face", "size"], "span": ["class"]}
@@ -299,6 +308,65 @@ def _get_monthly_km(athlete_id: int, year: int, db: Session) -> dict:
     return monthly
 
 
+def _render_athletes_tbody(athletes, target_year: int, current_month: int, db: Session) -> str:
+    """Render the full <tbody> HTML for the athletes table."""
+    monthly_data = {}
+    yearly_totals = {}
+    for a in athletes:
+        md = _get_monthly_km(a.id, target_year, db)
+        mv = list(md.values())
+        yearly_totals[a.id] = sum(mv) if mv else 0.0
+        monthly_data[a.id] = md
+
+    best_month = None
+    for m in range(current_month, 0, -1):
+        if any(monthly_data.get(a.id, {}).get(f"monthly_km_{m}", 0) or 0 > 0 for a in athletes):
+            best_month = m
+            break
+
+    ranked = []
+    if best_month:
+        for a in athletes:
+            km_val = monthly_data.get(a.id, {}).get(f"monthly_km_{best_month}", 0) or 0
+            if km_val > 0:
+                ranked.append((a.id, km_val))
+        ranked.sort(key=lambda x: x[1], reverse=True)
+
+    tmpl = _jinja_env.get_template("partials/athlete_row.html")
+
+    out = []
+    for a in athletes:
+        status = calculate_dispensary_status(a.dispensary_date)
+        row_data = {
+            "id": a.id,
+            "full_name": a.full_name,
+            "rank": a.rank,
+            "rusada_status": a.rusada_status,
+            "dispensary_date": a.dispensary_date.isoformat() if a.dispensary_date else None,
+            "dispensary_status": status,
+            "clinic_status": a.clinic_status,
+            "is_active": a.is_active,
+            "yearly_km": yearly_totals.get(a.id, 0.0),
+        }
+        for k, v in monthly_data.get(a.id, {}).items():
+            row_data[k] = v or 0.0
+
+        month_rank = None
+        if best_month and ranked:
+            for idx, (aid, km_val) in enumerate(ranked):
+                if aid == a.id:
+                    if km_val > 0:
+                        if idx > 0 and ranked[idx - 1][1] == km_val:
+                            month_rank = ranked[idx - 1][2]["month_rank"] if hasattr(ranked[idx - 1][2], 'month_rank') else ranked[idx - 1][0]
+                        else:
+                            month_rank = idx + 1
+                    break
+
+        row_data["month_rank"] = month_rank
+        out.append(tmpl.module.render_athlete_row(row_data, target_year))
+    return "\n".join(out)
+
+
 @app.get("/")
 async def index(request: Request, year: Optional[int] = None, db: Session = Depends(get_db)):
     if year is None:
@@ -369,6 +437,16 @@ async def index(request: Request, year: Optional[int] = None, db: Session = Depe
         "months": ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"],
         "month_title": month_title,
     })
+
+
+@app.get("/htmx/athletes-tbody/{year}")
+async def htmx_get_athletes_tbody(year: int, db: Session = Depends(get_db)):
+    """Возвращает обновлённый tbody с спортсменами (месячные км + итоги)."""
+    athletes = db.query(Athlete).filter(Athlete.is_active == True).all()
+    current_month = datetime.date.today().month
+    rows_html = _render_athletes_tbody(athletes, year, current_month, db)
+    return HTMLResponse(content=rows_html)
+
 
 @app.post("/htmx/athlete")
 async def htmx_create_athlete(
@@ -466,6 +544,139 @@ async def htmx_update_cell(
         raise HTTPException(status_code=400, detail=f"Неизвестное поле: {field}")
     db.commit()
     return PlainTextResponse("updated")
+
+# ==================== TRAININGS BY MONTH ====================
+
+@app.get("/htmx/athlete/{athlete_id}/trainings")
+async def htmx_get_month_trainings(
+    athlete_id: int,
+    request: Request,
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(datetime.date.today().year),
+    db: Session = Depends(get_db),
+):
+    """Возвращает HTML со списком тренировок за указанный месяц."""
+    athlete = db.query(Athlete).filter(Athlete.id == athlete_id).first()
+    if not athlete:
+        raise HTTPException(status_code=404, detail="Спортсмен не найден")
+
+    start = datetime.date(year, month, 1)
+    next_month = datetime.date(year, month + 1, 1) if month < 12 else datetime.date(year + 1, 1, 1)
+    end = next_month - datetime.timedelta(days=1)
+
+    trainings = (
+        db.query(Training)
+        .filter(
+            Training.athlete_id == athlete_id,
+            Training.date >= start,
+            Training.date <= end,
+        )
+        .order_by(Training.date)
+        .all()
+    )
+
+    month_name = ["", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+                  "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"][month]
+
+    total_km = sum(t.distance_km for t in trainings)
+
+    tmpl_html = f'''<p class="text-sm text-gray-600 font-semibold">{month_name} {year}</p>
+<div class="bg-gray-50 rounded-lg p-3">
+    <p class="text-sm text-gray-600">Спортсмен: <span class="font-semibold">{html.escape(athlete.full_name or "")}</span></p>
+    <p class="text-sm text-gray-600 mt-1">Всего за месяц: <span class="font-bold text-emerald-700">{total_km:.1f} км</span></p>
+</div>
+{('<ul class="divide-y divide-gray-200 bg-white rounded-lg shadow-sm">' if trainings else '') + ''.join(
+    '<li class="px-4 py-3 flex justify-between items-center hover:bg-gray-50" data-training-id="' + str(t.id) + '">'
+    + '<span class="text-gray-700 font-medium">' + t.date.strftime("%d.%m.%Y") + '</span>'
+    + '<span class="text-gray-900 font-bold">' + f'{t.distance_km:.1f}' + ' км</span>'
+    + '<button type="button" onclick="deleteTraining(this)" title="Удалить тренировку" class="ml-2 text-red-400 hover:text-red-600 transition">&times;</button>'
+    + '</li>' for t in trainings) + ('</ul>' if trainings else '')}
+{('<p class="text-center text-gray-400 py-4">Нет тренировок за этот месяц</p>' if not trainings else '')}
+<form onsubmit="addTrainingForMonth(event, {athlete_id}, {year}, {month})" class="flex gap-2 items-end">
+    <div class="flex-1">
+        <label class="block text-xs font-medium text-gray-600 mb-1">Дата</label>
+        <input type="date" id="new-training-date-for-month" required class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+    </div>
+    <div class="w-28">
+        <label class="block text-xs font-medium text-gray-600 mb-1">Км</label>
+        <input type="number" step="0.1" min="0" id="new-training-km-for-month" required placeholder="10.5" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+    </div>
+    <button type="submit" class="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg whitespace-nowrap">Добавить</button>
+</form>'''
+    return HTMLResponse(content=tmpl_html)
+
+
+@app.get("/htmx/trainings-all")
+async def htmx_get_all_trainings(
+    request: Request,
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(datetime.date.today().year),
+    db: Session = Depends(get_db),
+):
+    """Возвращает HTML со списком тренировок всех спортсменов за указанный месяц."""
+    athletes = db.query(Athlete).order_by(Athlete.id).all()
+    month_name = ["", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+                  "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"][month]
+
+    start = datetime.date(year, month, 1)
+    next_month = datetime.date(year, month + 1, 1) if month < 12 else datetime.date(year + 1, 1, 1)
+    end = next_month - datetime.timedelta(days=1)
+
+    cards = []
+    total_all = 0.0
+    for athlete in athletes:
+        trainings = (
+            db.query(Training)
+            .filter(
+                Training.athlete_id == athlete.id,
+                Training.date >= start,
+                Training.date <= end,
+            )
+            .order_by(Training.date)
+            .all()
+        )
+        total_km = sum(t.distance_km for t in trainings)
+        total_all += total_km
+
+        name_escaped = html.escape(athlete.full_name or 'Неизвестно')
+        training_items = ''.join(
+            f'<li class="px-4 py-2 flex justify-between items-center hover:bg-gray-50" data-training-id="{t.id}">'
+            f'<span class="text-gray-700 font-medium">{t.date.strftime("%d.%m.%Y")}</span>'
+            f'<span class="text-gray-900 font-bold">{t.distance_km:.1f} км</span>'
+            f'<button type="button" onclick="deleteTraining(this)" title="Удалить тренировку" class="ml-2 text-red-400 hover:text-red-600 transition">&times;</button></li>'
+            for t in trainings
+        )
+
+        card = f'''<div class="border border-gray-200 rounded-lg p-3">
+    <div class="flex justify-between items-center mb-2">
+        <p class="text-sm font-semibold text-gray-800">{name_escaped}</p>
+        <p class="text-sm text-emerald-700 font-bold">{total_km:.1f} км</p>
+    </div>
+    {'<ul class="space-y-1">' + training_items + '</ul>' if trainings else '<p class="text-xs text-gray-400 italic">Нет тренировок</p>'}
+    <form onsubmit="addTrainingForMonth(event, {athlete.id}, {year}, {month})" class="mt-2 flex gap-2 items-end">
+        <input type="date" id="new-training-date-for-month-{athlete.id}" required
+               class="border border-gray-300 rounded px-2 py-1 text-sm w-36"
+               name="training_date">
+        <input type="number" step="0.1" min="0" id="new-training-km-for-month-{athlete.id}" required placeholder="км"
+               class="border border-gray-300 rounded px-2 py-1 text-sm w-20"
+               name="training_km">
+        <button type="submit" class="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded whitespace-nowrap">Добавить</button>
+    </form>
+</div>'''
+        cards.append(card)
+
+    total_html = f'<p class="text-sm font-bold text-gray-800 pt-2 border-t border-gray-200 mt-2">Итого за месяц: {total_all:.1f} км</p>' if total_all > 0 else ''
+
+    tmpl_html = f'''
+<div class="space-y-3">
+    <!-- Год/месяц отображается в заголовке модалки (обновляется JS) -->
+    <p class="text-sm text-gray-600 font-semibold">{month_name} {year}</p>
+    {''.join(cards)}
+    {total_html}
+</div>
+'''
+    return HTMLResponse(content=tmpl_html)
+
 
 @app.get("/htmx/athlete/{athlete_id}/input/{field}")
 async def htmx_get_input(

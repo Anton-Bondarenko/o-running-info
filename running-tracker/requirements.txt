@@ -6,3 +6,4 @@ python-multipart
 pytest
 httpx
 bleach
+python-dotenv
