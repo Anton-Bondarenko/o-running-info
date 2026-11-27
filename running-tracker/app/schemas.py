@@ -10,7 +10,9 @@ class AthleteBase(BaseModel):
     rusada_status: bool = False
     dispensary_date: Optional[date] = None
     clinic_status: Optional[str] = "Не надо"
+    xp: int = 0
     is_active: bool = True
+    test_field: Optional[str] = None
 
 
 class AthleteCreate(AthleteBase):
@@ -23,7 +25,9 @@ class AthleteUpdate(BaseModel):
     rusada_status: Optional[bool] = None
     dispensary_date: Optional[date] = None
     clinic_status: Optional[str] = None
+    xp: Optional[int] = None
     is_active: Optional[bool] = None
+    test_field: Optional[str] = None
 
 
 class AthleteResponse(AthleteBase):

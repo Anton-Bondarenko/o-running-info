@@ -30,9 +30,17 @@
 
     <!-- Разряд -->
     <td class="px-3 py-2 text-sm text-center">
-        <span class="click-editable px-2 py-1 bg-gray-100 rounded text-sm font-semibold text-gray-700 w-28 inline-block cursor-pointer hover:bg-blue-50"
+        <span class="click-editable px-2 py-1 bg-gray-100 rounded text-sm font-semibold text-gray-700 w-16 inline-block cursor-pointer hover:bg-blue-50"
               data-hx-get="/htmx/athlete/{{ athlete.id }}/input/rank">
             {{ athlete.rank or '—' }}
+        </span>
+    </td>
+
+    <!-- XP -->
+    <td class="px-3 py-2 text-sm text-center">
+        <span class="click-editable px-2 py-1 bg-purple-100 rounded text-sm font-bold text-purple-800 w-12 inline-block cursor-pointer hover:bg-purple-200"
+              data-hx-get="/htmx/athlete/{{ athlete.id }}/input/xp">
+            {{ athlete.xp | default(0) }}
         </span>
     </td>
 
@@ -94,8 +102,8 @@
     <td class="px-3 py-2 text-sm text-center">
         <button type="button"
                 hx-delete="/htmx/athlete/{{ athlete.id }}"
-                hx-target="#athlete-row-{{ athlete.id }}"
-                hx-swap="outerHTML"
+                hx-target="#athletes-tbody"
+                hx-swap="innerHTML"
                 hx-confirm="Удалить спортсмена?"
                 class="text-red-500 hover:text-red-700 font-bold px-2 py-1 rounded hover:bg-red-50 transition"
                 title="Удалить">

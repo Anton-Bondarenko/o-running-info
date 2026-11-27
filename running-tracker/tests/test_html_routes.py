@@ -97,7 +97,7 @@ def test_htmx_post_create_athlete(client, _clear_data):
 
 
 def test_htmx_delete_athlete(test_db, client, _clear_data):
-    """DELETE /htmx/athlete/{id} удаляет спортсмена."""
+    """DELETE /htmx/athlete/{id} удаляет спортсмена и возвращает обновленный tbody."""
     athlete = Athlete(full_name="Удаляемый", rank=None, rusada_status=False)
     test_db.add(athlete)
     test_db.commit()
@@ -105,7 +105,9 @@ def test_htmx_delete_athlete(test_db, client, _clear_data):
 
     response = client.delete(f"/htmx/athlete/{athlete.id}")
     assert response.status_code == 200
-    assert response.text == "deleted"
+    # Should return re-rendered tbody HTML (not plain text anymore)
+    assert "text/html" in response.headers["content-type"]
+    assert "Удаляемый" not in response.text  # deleted athlete should not appear
 
 
 def test_htmx_patch_cell_full_name(test_db, client, _clear_data):

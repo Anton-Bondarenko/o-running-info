@@ -38,6 +38,31 @@ def get_db():
         db.close()
 
 
+def _ensure_columns(table_name: str, columns: dict[str, str]):
+    """Добавить новые колонки в существующую таблицу SQLite (без Alembic)."""
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        # Получаем список колонок из sqlite_master
+        rows = conn.execute(
+            text(f"PRAGMA table_info({table_name})")
+        ).fetchall()
+        existing_cols = {row[1] for row in rows}
+
+        for col_name, col_def in columns.items():
+            if col_name not in existing_cols:
+                sql = f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_def}"
+                conn.execute(text(sql))
+                print(f"[migration] Added column '{col_name}' to '{table_name}'")
+        conn.commit()
+
+
 def init_db():
     from app import models  # noqa: F401 — импортируем модели, чтобы они знали о Table
     Base.metadata.create_all(bind=engine)
+
+    # === Миграции без Alembic ===
+    _ensure_columns("athletes", {
+        "xp": "INTEGER DEFAULT 0",
+        "test_field": "TEXT",
+    })

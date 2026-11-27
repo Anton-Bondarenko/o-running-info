@@ -166,7 +166,9 @@ def get_athletes(year: Optional[int] = None, db: Session = Depends(get_db)):
             "dispensary_date": a.dispensary_date.isoformat() if a.dispensary_date else None,
             "dispensary_status": status,
             "clinic_status": a.clinic_status,
+            "xp": a.xp,
             "is_active": a.is_active,
+            "test_field": a.test_field,
             "yearly_km": yearly_km,
         })
     return result
@@ -181,7 +183,9 @@ def create_athlete(data: AthleteCreate, db: Session = Depends(get_db)):
         rusada_status=data.rusada_status,
         dispensary_date=data.dispensary_date,
         clinic_status=data.clinic_status or "Не надо",
+        xp=data.xp,
         is_active=data.is_active,
+        test_field=data.test_field,
     )
     db.add(athlete)
     db.commit()
@@ -343,6 +347,7 @@ def _render_athletes_tbody(athletes, target_year: int, current_month: int, db: S
             "dispensary_date": a.dispensary_date.isoformat() if a.dispensary_date else None,
             "dispensary_status": status,
             "clinic_status": a.clinic_status,
+            "xp": a.xp,
             "is_active": a.is_active,
             "yearly_km": yearly_totals.get(a.id, 0.0),
         }
@@ -387,6 +392,7 @@ async def index(request: Request, year: Optional[int] = None, db: Session = Depe
             "dispensary_date": a.dispensary_date.isoformat() if a.dispensary_date else None,
             "dispensary_status": status,
             "clinic_status": a.clinic_status,
+            "xp": a.xp,
             "is_active": a.is_active,
             "yearly_km": yearly_km,
             **monthly_km,
@@ -451,6 +457,7 @@ async def htmx_create_athlete(
         request: Request,
         full_name: str = Form(...),
         rank: Optional[str] = Form(None),
+        xp: int = Form(0),
         rusada_status: bool = Form(False),
         dispensary_date: Optional[str] = Form(None),
         clinic_status: Optional[str] = Form(None),
@@ -467,6 +474,7 @@ async def htmx_create_athlete(
     athlete = Athlete(
         full_name=clean_name,
         rank=rank or None,
+        xp=xp,
         rusada_status=rusada_status,
         dispensary_date=date_val,
         clinic_status=clinic_status or "Не надо",
@@ -481,6 +489,7 @@ async def htmx_create_athlete(
             "id": athlete.id,
             "full_name": athlete.full_name,
             "rank": athlete.rank,
+            "xp": athlete.xp,
             "rusada_status": athlete.rusada_status,
             "dispensary_date": athlete.dispensary_date.isoformat() if athlete.dispensary_date else None,
             "dispensary_status": calculate_dispensary_status(athlete.dispensary_date),
@@ -500,7 +509,12 @@ async def htmx_delete_athlete(athlete_id: int, request: Request, db: Session = D
         raise HTTPException(status_code=404, detail="Спортсмен не найден")
     db.delete(athlete)
     db.commit()
-    return PlainTextResponse("deleted")
+
+    # Re-render full tbody so the deleted row disappears
+    athletes = db.query(Athlete).filter(Athlete.is_active == True).all()
+    current_month = datetime.date.today().month
+    rows_html = _render_athletes_tbody(athletes, datetime.date.today().year, current_month, db)
+    return HTMLResponse(content=rows_html)
 
 @app.patch("/htmx/athlete/{athlete_id}/cell/{field}")
 async def htmx_update_cell(
@@ -535,6 +549,12 @@ async def htmx_update_cell(
     elif field == "clinic_status":
         value = body.get("value") or None
         athlete.clinic_status = value
+    elif field == "xp":
+        value = body.get("value")
+        if value is not None and str(value).strip() != "":
+            athlete.xp = int(value)
+        else:
+            athlete.xp = 0
     elif field == "rusada_status":
         value = str(body.get("value", "")).lower() == "true"
         athlete.rusada_status = value
@@ -587,7 +607,7 @@ async def htmx_get_month_trainings(
     '<li class="px-4 py-3 flex justify-between items-center hover:bg-gray-50" data-training-id="' + str(t.id) + '">'
     + '<span class="text-gray-700 font-medium">' + t.date.strftime("%d.%m.%Y") + '</span>'
     + '<span class="text-gray-900 font-bold">' + f'{t.distance_km:.1f}' + ' км</span>'
-    + '<button type="button" onclick="deleteTraining(this)" title="Удалить тренировку" class="ml-2 text-red-400 hover:text-red-600 transition">&times;</button>'
+    + '<button type="button" onclick="deleteTraining(this)" title="Удалить тренировку" class="ml-2 px-2 py-1 bg-red-50 border border-red-200 text-red-500 hover:bg-red-100 hover:border-red-300 rounded transition font-bold">&times;</button>'
     + '</li>' for t in trainings) + ('</ul>' if trainings else '')}
 {('<p class="text-center text-gray-400 py-4">Нет тренировок за этот месяц</p>' if not trainings else '')}
 <form onsubmit="addTrainingForMonth(event, {athlete_id}, {year}, {month})" class="flex gap-2 items-end">
@@ -641,7 +661,7 @@ async def htmx_get_all_trainings(
             f'<li class="px-4 py-2 flex justify-between items-center hover:bg-gray-50" data-training-id="{t.id}">'
             f'<span class="text-gray-700 font-medium">{t.date.strftime("%d.%m.%Y")}</span>'
             f'<span class="text-gray-900 font-bold">{t.distance_km:.1f} км</span>'
-            f'<button type="button" onclick="deleteTraining(this)" title="Удалить тренировку" class="ml-2 text-red-400 hover:text-red-600 transition">&times;</button></li>'
+            f'<button type="button" onclick="deleteTraining(this)" title="Удалить тренировку" class="ml-2 px-2 py-1 bg-red-50 border border-red-200 text-red-500 hover:bg-red-100 hover:border-red-300 rounded transition font-bold">&times;</button></li>'
             for t in trainings
         )
 
@@ -714,6 +734,15 @@ async def htmx_get_input(
             'class="border border-blue-400 rounded px-2 py-1 text-sm cell-edit-input" '
             'data-hx-get="/htmx/athlete/' + str(athlete_id) + '/input/dispensary_date" '
             'data-save-url="/htmx/athlete/' + str(athlete_id) + '/cell/dispensary_date" autofocus>'
+        ),
+        "xp": (
+            '<input type="number" value="' + str(athlete.xp or 0) + '" '
+            'data-original-value="' + str(athlete.xp or 0) + '" '
+            'data-tag="span" '
+            'data-classes="click-editable px-2 py-1 bg-purple-100 rounded text-sm font-bold text-purple-800 w-24 inline-block cursor-pointer hover:bg-purple-200" '
+            'class="border border-blue-400 rounded px-2 py-1 text-sm w-24 cell-edit-input" '
+            'data-hx-get="/htmx/athlete/' + str(athlete_id) + '/input/xp" '
+            'data-save-url="/htmx/athlete/' + str(athlete_id) + '/cell/xp" autofocus>'
         ),
         "clinic_status": (
             '<input type="text" value="' + html.escape(athlete.clinic_status or "") + '" '

@@ -35,7 +35,9 @@ class Athlete(Base):
     rusada_status = Column(Boolean, default=False)
     dispensary_date = Column(Date, nullable=True)
     clinic_status = Column(String, default="Не надо")
+    xp = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
+    test_field = Column(String, nullable=True)  # test field for migration check
 
     trainings = relationship("Training", back_populates="athlete", cascade="all, delete-orphan")
 

@@ -15,4 +15,6 @@ RUN mkdir -p /app/data
 
 EXPOSE 8000
 
-CMD ["python", "run_server.py"]
+RUN chmod +x entrypoint.sh
+
+ENTRYPOINT ["./entrypoint.sh"]

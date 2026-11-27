@@ -12,7 +12,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $scriptDir = if ($PSCommandPath) { Split-Path $PSCommandPath -Parent } else { Split-Path $PSScriptRoot -Absolute }
-$root = (Resolve-Path (Join-Path $scriptDir '../..')).Path
+if (Test-Path (Join-Path $scriptDir 'running-tracker')) {
+    $root = $scriptDir
+} elseif (Test-Path (Join-Path $scriptDir '..\running-tracker')) {
+    $root = Join-Path $scriptDir '..'
+} else {
+    $root = (Resolve-Path (Join-Path $scriptDir '..')).Path
+}
 
 # === Logging ===
 $logFile = "$env:TEMP\rt-deploy-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
@@ -147,23 +153,33 @@ function Backup-RemoteDB {
 
 function Ensure-ValidDBOnHost {
     param([string]$hostPath)
-    # Guarantee a valid SQLite DB always exists in the host bind-mount source dir
+    # Guarantee a valid SQLite DB always exists in the host bind-mount source dir.
+    # CRITICAL RULE: ALWAYS backup BEFORE any read/write operation on host DB.
     $bakDir = "$hostPath/pre-deploy-backups"
 
     if (Test-RemoteDBExists $hostPath) {
         Write-Log "[*] DB file found, checking validity..."
+
+        # === STEP 1: Always create backup FIRST (before any validation or modification) ===
+        $sizeBeforeBackup = Run-Ssh "stat -c '%s' '$hostPath/tracker.db' 2>/dev/null || echo 0"
+        if ([int]$sizeBeforeBackup -gt 0) {
+            Run-Ssh "mkdir -p '$bakDir'" | Out-Null
+            $bakName = "tracker-pre-deploy-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".db"
+            Write-Host "`n[!] SAFETY: Backing up existing DB ($sizeBeforeBackup bytes) before any deploy operation..." -ForegroundColor Yellow
+            $rc = Run-Ssh "cp '$hostPath/tracker.db' '$bakDir/$bakName' 2>&1"
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "[+] Pre-deploy backup saved: $bakName" -ForegroundColor Green
+            } else {
+                Write-Host "[!] WARNING: Backup failed — deploy may risk data loss!" -ForegroundColor Red
+            }
+        }
+
+        # === STEP 2: Check validity AFTER backup ===
         if (-not (Test-RemoteDBValid $hostPath)) {
             Write-Host "[!] DB file exists but is corrupted/empty — replacing with fresh valid DB" -ForegroundColor Yellow
-            # Backup first if there's a non-empty file
-            $size = Run-Ssh "stat -c '%s' '$hostPath/tracker.db' 2>/dev/null || echo 0"
-            if ([int]$size -gt 0) {
-                Run-Ssh "mkdir -p '$bakDir'" | Out-Null
-                $bakName = "tracker-bad-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".db"
-                Run-Ssh "cp '$hostPath/tracker.db' '$bakDir/$bakName' 2>&1" | Out-Null
-                Write-Host "[!] Backed up corrupted file" -ForegroundColor Yellow
-            }
+            Run-Ssh "mkdir -p '$bakDir'" | Out-Null
         } else {
-            Write-Host "[+] DB is valid — no action needed." -ForegroundColor Green
+            Write-Host "[+] DB is valid and backed up — no modification needed." -ForegroundColor Green
             return
         }
     } else {
@@ -172,11 +188,11 @@ function Ensure-ValidDBOnHost {
     }
 
     # Write Python script to a temporary file on the remote host and execute it there.
-    # This avoids docker, long command-lines, and nested quoting.
+    # CRITICAL: ONLY create DB if it does NOT exist (never overwrite!).
     $pyScript = "import sqlite3, os" + "`n" +
         "db = r'$hostDataDir/tracker.db'" + "`n" +
-        "if os.path.exists(db): os.remove(db)" + "`n" +
-        "conn = sqlite3.connect(db)" + "`n" +
+        "if not os.path.exists(db):" + "`n" +  # NEVER overwrite existing file!
+        "    conn = sqlite3.connect(db)" + "`n" +
         "cur = conn.cursor()" + "`n" +
         "cur.execute('CREATE TABLE IF NOT EXISTS athletes (id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT, rank TEXT, rusada_status BOOLEAN DEFAULT 0, dispensary_date TEXT, clinic_status TEXT, is_active BOOLEAN DEFAULT 1, deleted_at TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)')" + "`n" +
         "cur.execute('CREATE TABLE IF NOT EXISTS trainings (id INTEGER PRIMARY KEY AUTOINCREMENT, athlete_id INTEGER NOT NULL, date DATE, distance_km REAL, FOREIGN KEY(athlete_id) REFERENCES athletes(id))')" + "`n" +
@@ -274,7 +290,10 @@ function Sync-Dir {
         # Exclude stray temp files from previous attempts
         if ($name -match '^\.' -or $name -match '^gito-' -or $name -match '^result_' -or $name -match '^test_' -or $name -eq '.env') { return $false }
         # Exclude large/unneeded directories (use -match for substring check)
-        if ($pathLower -match '(^|\\)(__pycache__|venv|\.pytest_cache|\.claude|tests|test-screenshots)(\\|$)') { return $false }
+        $dirName = $_.DirectoryName.ToLower()
+        if ($dirName -match '(__pycache__|venv|\.pytest_cache|\.claude|tests|test-screenshots)(\\|$)') { return $false }
+        # Exclude external project subdirs — use FullName so the path is available here
+        if ($_.FullName -match '(^|[\\/])(\.git|OrientVibe|dataset|external|node_modules)[\\/]') { return $false }
         # Only allow known app file types (exclude scripts, configs, test files that are deploy-only)
         $ext = $_.Extension.ToLower()
         if ($ext -in @('.py', '.html', '.css', '.js')) { return $true }
@@ -313,6 +332,7 @@ services:
       - "8000:8000"
     volumes:
       - ${hostDataDir}:/app/data
+      - ${remoteAppDir}/app:/app/app
       - ${remoteAppDir}/.env:/app/.env:ro
     environment:
       - SERVER_HOST=0.0.0.0
@@ -345,23 +365,55 @@ Remove-Item $envTmp -Force -ErrorAction SilentlyContinue
     if (Test-Path $_) { Send-RemoteFile $_ "$remoteAppDir/$_" }
 }
 
-# App directory (remotePrefix '/' appends to remoteAppDir = /home/.../running-tracker)
-Sync-Dir $root '/'
+# Upload running-tracker app directory only (not entire project root with external dirs)
+$rtSrcDir = Join-Path $root 'running-tracker'
+if (-not (Test-Path $rtSrcDir)) {
+    Write-Host "[!] ERROR: running-tracker/ directory not found at $rtSrcDir" -ForegroundColor Red
+    exit 1
+}
+Write-Host "`n[*] Syncing app files from running-tracker/ ..."
+Sync-Dir $rtSrcDir '/'
 
 Write-Host "[+] Files synced."
+
+# === Upload Dockerfile (Sync-Dir excludes files without extension) ===
+Send-RemoteFile "$rtSrcDir\Dockerfile" "$remoteAppDir/Dockerfile"
 
 # === Ensure valid DB exists at bind-mount BEFORE starting container ===
 Write-Host "`n[*] Checking database persistence setup..." -ForegroundColor Cyan
 Ensure-ValidDBOnHost $hostDataDir
 
-# === Up (no rebuild - use existing image) ===
+# === Migrate DB columns inside container before starting it ===
+Write-Host "`n[*] Ensuring DB has all columns..." -ForegroundColor Cyan
+$migScript = @'
+import sqlite3, sys
+db_path = sys.argv[1]
+conn = sqlite3.connect(db_path)
+rows = conn.execute('PRAGMA table_info(athletes)').fetchall()
+cols = set(r[1] for r in rows)
+for name, defn in [('xp', 'INTEGER DEFAULT 0'), ('test_field', 'TEXT')]:
+    if name not in cols:
+        conn.execute(f'ALTER TABLE athletes ADD COLUMN {name} {defn}')
+        print(f'Added column: {name}')
+    else:
+        print(f'Column already exists: {name}')
+conn.commit()
+print('DB migration complete.')
+conn.close()
+'@
+$migTmp = "$env:TEMP\migrate-db.py"
+[IO.File]::WriteAllText($migTmp, $migScript, [System.Text.Encoding]::UTF8)
+Run-Ssh "mkdir -p '$remoteAppDir'" | Out-Null
+$scpDest = "${username}@${hostName}:${remoteAppDir}/migrate-db.py"
+& pscp -batch -P $port -pw $pass $migTmp $scpDest | Out-Null
+Run-Ssh "docker cp '${remoteAppDir}/migrate-db.py' running-tracker:/tmp/migrate.py && docker exec running-tracker python3 /tmp/migrate.py /app/data/tracker.db" | Out-Null
+Remove-Item $migTmp -Force -ErrorAction SilentlyContinue
+
+# === Up (no rebuild - use existing image, volume-mounted code) ===
 Write-Host "`n[*] Stopping any existing container first..."
-# Force remove stale container (remove always wins over compose down)
 Run-Ssh "docker rm -f running-tracker 2>/dev/null; true" | Out-Null
-$rc = Run-Ssh "cd '$remoteAppDir' && docker compose down 2>&1" | Out-Null
-# Reconnect after docker compose down (can kill SSH sessions)
 Ensure-SSHAlive
-Write-Host "`n[*] Starting container (using existing image, no rebuild)..."
+Write-Host "`n[*] Starting container (image + volume-mounted code)..."
 $rc = Run-Ssh "cd '$remoteAppDir' && docker compose up -d 2>&1"
 Write-Host $rc
 
